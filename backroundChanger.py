@@ -8,7 +8,7 @@ from scipy.integrate import quad
 from threading import Thread, Event
 import json
 
-def splitDayIntoParts(n: int) -> list[timedelta]:
+def splitDayIntoParts(n: int, latitude: float, longitude: float) -> list[timedelta]:
     sunrise, sunset = calculateDaytime(latitude, longitude)
 
     dayLength = sunset - sunrise
@@ -74,18 +74,18 @@ def sortWallpapers(l: list[str]) -> list[str]:
                 break
     return sortedList
 
-def initialiseRelevantVariables(relativePath: str) -> tuple[list[str], list[timedelta]]:
+def initialiseRelevantVariables(relativePath: str, latitude: float, longitude: float) -> tuple[list[str], list[timedelta]]:
     #Converts relative path to absolute path
     pathToWallpapers = os.path.abspath(relativePath)
     wallpapersIterator = os.scandir(pathToWallpapers)
     #List of absolute paths for each wallpaper
     pathToWallpaper = [i.path for i in wallpapersIterator]
     pathToWallpaper = sortWallpapers(pathToWallpaper)
-    dayIntervals = splitDayIntoParts(len(pathToWallpaper))
+    dayIntervals = splitDayIntoParts(len(pathToWallpaper), latitude, longitude)
 
     return pathToWallpaper, dayIntervals
 
-def wallpaperChangingLoop(killThread: Event):
+def wallpaperChangingLoop(killThread: Event, dayIntervals: list[timedelta], pathToWallpaper: list[str]):
     previousIndex = None
     while True and not killThread.isSet():
         print("Entered loop")
@@ -99,12 +99,18 @@ def wallpaperChangingLoop(killThread: Event):
             previousIndex = currentIndex
         sleep(30)
 
-if __name__ == '__main__':
-    #Relative path to wallpapers folder
-    #In the future should be changed trough a GUI to select wallpaper batch
+def main():
+    # Relative path to wallpapers folder
+    # In the future should be changed trough a GUI to select wallpaper batch
     previousRelativePath = ""
     previousLongitude = None
     previousLatitude = None
+    killThread = Event()
+
+    pathToWallpaper = None
+    dayIntervals = None
+
+    wallpaperThread = Thread(target=wallpaperChangingLoop, args=(killThread, dayIntervals, pathToWallpaper))
 
     while True:
         with open("config.json", "r") as config:
@@ -113,18 +119,22 @@ if __name__ == '__main__':
             longitude = configJSON['longitude']
             latitude = configJSON['latitude']
 
-        killThread = Event()
-        wallpaperThread = Thread(target=wallpaperChangingLoop, args=(killThread,))
         if relativePath != previousRelativePath or longitude != previousLongitude or latitude != previousLatitude:
-            pathToWallpaper, dayIntervals = initialiseRelevantVariables(relativePath)
+            pathToWallpaper, dayIntervals = initialiseRelevantVariables(relativePath, latitude, longitude)
 
             if wallpaperThread.is_alive():
                 killThread.set()
 
             if not wallpaperThread.is_alive():
                 killThread.clear()
+                wallpaperThread = Thread(target=wallpaperChangingLoop, args=(killThread, dayIntervals, pathToWallpaper))
                 wallpaperThread.start()
+
             previousLatitude = latitude
             previousLongitude = longitude
             previousRelativePath = relativePath
-            sleep(30)
+
+        sleep(30)
+
+if __name__ == '__main__':
+    main()
