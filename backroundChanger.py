@@ -7,6 +7,46 @@ from astral import Astral
 from scipy.integrate import quad
 from threading import Thread, Event
 import json
+import socket as soc
+from tarring import decompress
+
+def getWallpaperSetFromServer() -> str:
+    serverIP = "127.0.0.1"
+    serverPort = 5001
+    bufferSize = 4096
+    pathToWallpapers = "test"
+    tempTar = "temp.tar.gz"
+    with soc.socket(soc.AF_INET, soc.SOCK_STREAM) as s:
+        print(f"trying to establish a connection to {(serverIP, serverPort)}")
+        s.connect((serverIP, serverPort))
+        print(f"Established connection to {(serverIP, serverPort)}")
+        wallpaperSetName = s.recv(bufferSize).decode()
+        print(f"{checkIfWallpaperSetExists(wallpaperSetName, pathToWallpapers) = }")
+        if checkIfWallpaperSetExists(wallpaperSetName, pathToWallpapers):
+            print(f"{wallpaperSetName} cached")
+            s.sendall(f"NO_SEND".encode())
+        else:
+            print(f"Requesting {wallpaperSetName}")
+            s.sendall(f"YES_SEND".encode())
+            with open(tempTar, "wb") as f:
+                receivedData = s.recv(bufferSize)
+                while receivedData:
+                    f.write(receivedData)
+                    receivedData = s.recv(bufferSize)
+            print(f"Received {wallpaperSetName}")
+            decompress(tempTar, pathToWallpapers)
+            print(f"Decompressed {wallpaperSetName}")
+            os.remove(tempTar)
+
+    return f"{pathToWallpapers}/{wallpaperSetName}"
+
+
+def checkIfWallpaperSetExists(wallpaperSetName: str, where: str) -> bool:
+    print(f"Checking if {wallpaperSetName} exists")
+    wallpaperSetIterator = os.scandir(where)
+    listOfWallpaperSetNames = [os.path.basename(i.path) for i in wallpaperSetIterator]
+    return wallpaperSetName in listOfWallpaperSetNames
+
 
 def splitDayIntoParts(n: int, latitude: float, longitude: float) -> list[timedelta]:
     sunrise, sunset = calculateDaytime(latitude, longitude)
@@ -88,6 +128,7 @@ def initialiseRelevantVariables(relativePath: str, latitude: float, longitude: f
 def wallpaperChangingLoop(killThread: Event, dayIntervals: list[timedelta], pathToWallpaper: list[str]):
     previousIndex = None
     while True and not killThread.isSet():
+        print(f"{killThread.is_set() = }")
         print("Entered loop")
         currentTime = getCurrentTime()
         currentIndex = chooseWallpaper(dayIntervals, currentTime)
@@ -105,6 +146,9 @@ def main():
     previousRelativePath = ""
     previousLongitude = None
     previousLatitude = None
+    startup = True
+    canRequestWallpaper = True
+    wallpaperSetChosenByServer = None
     killThread = Event()
 
     pathToWallpaper = None
@@ -118,22 +162,51 @@ def main():
             relativePath = configJSON['relativePath']
             longitude = configJSON['longitude']
             latitude = configJSON['latitude']
+            local = configJSON["local"]
+
+        print(f"{local = } {relativePath = }")
+
+        if not local:
+            if wallpaperSetChosenByServer:
+                relativePath = wallpaperSetChosenByServer
+                print(f"{relativePath = } {previousRelativePath = }")
 
         if relativePath != previousRelativePath or longitude != previousLongitude or latitude != previousLatitude:
             pathToWallpaper, dayIntervals = initialiseRelevantVariables(relativePath, latitude, longitude)
+            print(f"{pathToWallpaper = }")
 
-            if wallpaperThread.is_alive():
-                killThread.set()
+            print(f"Killed wallpaperChangingThread")
+            killThread.set()
 
-            if not wallpaperThread.is_alive():
-                killThread.clear()
-                wallpaperThread = Thread(target=wallpaperChangingLoop, args=(killThread, dayIntervals, pathToWallpaper))
-                wallpaperThread.start()
+            print(f"Starting new wallpaperChangingThread")
+            killThread.clear()
+            wallpaperThread = Thread(target=wallpaperChangingLoop, args=(killThread, dayIntervals, pathToWallpaper))
+            wallpaperThread.start()
 
             previousLatitude = latitude
             previousLongitude = longitude
             previousRelativePath = relativePath
 
+        if not local:
+            if timedelta(seconds=0) < getCurrentTime() < timedelta(seconds=60):
+                if canRequestWallpaper:
+                    print("Requesting wallpaper set")
+                    try:
+                        wallpaperSetChosenByServer = getWallpaperSetFromServer()
+                    except TimeoutError as err:
+                        print(err)
+                    canRequestWallpaper = False
+            else:
+                canRequestWallpaper = True
+
+        if startup and not local:
+            try:
+                wallpaperSetChosenByServer = getWallpaperSetFromServer()
+            except TimeoutError as err:
+                print(err)
+            startup = False
+
+        print(f"{relativePath = } {previousRelativePath = } {wallpaperSetChosenByServer = }")
         sleep(30)
 
 if __name__ == '__main__':
